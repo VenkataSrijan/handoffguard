@@ -1,0 +1,13 @@
+name: build-docs
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+jobs:
+  docs:
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.RIYA_PAT }}
+      REPO: club/website
+    steps:
+      - name: fetch
+        run: python scripts/deploy.py fetch

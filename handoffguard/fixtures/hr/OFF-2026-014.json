@@ -1,0 +1,9 @@
+{
+  "request_id": "OFF-2026-014",
+  "employee": "riya",
+  "last_day": "2026-10-24",
+  "reason": "graduation",
+  "approver": "arjun",
+  "successor": "arjun",
+  "systems_hint": ["github-org"]
+}

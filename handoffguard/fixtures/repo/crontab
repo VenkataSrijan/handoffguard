@@ -1,0 +1,2 @@
+# m h dom mon dow  command        (host: ops-box-2)
+0 2 * * *  cd /srv/club && python scripts/backup.py   # nightly site backup
