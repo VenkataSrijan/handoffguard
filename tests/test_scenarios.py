@@ -154,7 +154,7 @@ def test_report_is_written(tmp_path):
     world, tools = new_session("s4_scope_403")
     agent = HandoffGuard(tools, RulesPlanner(), world.hr_path, run_dir=tmp_path)
     summary = drive(agent, auto_approver("approve_all"))
-    report = (tmp_path / "report.md").read_text()
+    report = (tmp_path / "report.md").read_text(encoding="utf-8")
     assert "Offboarding report" in report and "COMPLETE" in report
     assert "ghp_" not in report  # token values never leak
     assert (tmp_path / "ledger.jsonl").exists()

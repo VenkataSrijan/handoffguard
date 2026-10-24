@@ -506,8 +506,8 @@ class HandoffGuard:
         summary = {"metrics": self.metrics(), "report": build_report(self)}
         if self.run_dir:
             self.run_dir.mkdir(parents=True, exist_ok=True)
-            (self.run_dir / "ledger.jsonl").write_text("\n".join(json.dumps(e.to_dict()) for e in self.ledger) + "\n")
-            (self.run_dir / "report.md").write_text(summary["report"])
+            (self.run_dir / "ledger.jsonl").write_text("\n".join(json.dumps(e.to_dict()) for e in self.ledger) + "\n", encoding="utf-8")
+            (self.run_dir / "report.md").write_text(summary["report"], encoding="utf-8")
             summary["run_dir"] = str(self.run_dir)
         return summary
 

@@ -28,7 +28,7 @@ def parse_dotenv(path: Path, base: dict[str, str]) -> dict[str, str]:
     resolved: dict[str, str] = {}
     if not path.exists():
         return resolved
-    for raw in path.read_text().splitlines():
+    for raw in path.read_text(encoding="utf-8").splitlines():
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -47,7 +47,7 @@ def parse_crontab(path: Path) -> list[dict]:
     jobs = []
     if not path.exists():
         return jobs
-    for lineno, raw in enumerate(path.read_text().splitlines(), start=1):
+    for lineno, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
@@ -63,7 +63,7 @@ def parse_crontab(path: Path) -> list[dict]:
 
 
 def _workflow_steps(world: World, spec) -> tuple[dict[str, str], list[tuple[str, str]]]:
-    data = yaml.safe_load((world.repo_dir / spec.file).read_text()) or {}
+    data = yaml.safe_load((world.repo_dir / spec.file).read_text(encoding="utf-8")) or {}
     job = next(iter((data.get("jobs") or {}).values()))
     env = {}
     for key, value in (job.get("env") or {}).items():
@@ -98,6 +98,7 @@ def run_target(world: World, target: str, base_url: str) -> dict:
     env_extra, steps = (_workflow_steps if spec.kind == "pipeline" else _cron_steps)(world, spec)
     env = {k: v for k, v in os.environ.items()}
     env.update(env_extra)
+    env["PYTHONIOENCODING"] = "utf-8"
     env.update({"GIT_URL": base_url, "CLIENT_ID": spec.client_id, "REPO": env_extra.get("REPO", world.repo)})
     start = len(world.audit)
     log: list[str] = []
@@ -105,7 +106,7 @@ def run_target(world: World, target: str, base_url: str) -> dict:
     for name, command in steps:
         try:
             proc = subprocess.run(
-                _argv(command), cwd=world.repo_dir, env=env, capture_output=True, text=True, timeout=TIMEOUT_S
+                _argv(command), cwd=world.repo_dir, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=TIMEOUT_S
             )
         except subprocess.TimeoutExpired:
             passed, error_code = False, "timeout"

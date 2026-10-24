@@ -365,4 +365,4 @@ with tab_world:
         for p in sorted(w.repo_dir.rglob("*")):
             if p.is_file():
                 st.markdown(f"`{p.relative_to(w.repo_dir).as_posix()}`")
-                st.code(p.read_text(), language="yaml" if p.suffix in (".yml", ".yaml") else "python" if p.suffix == ".py" else "bash")
+                st.code(p.read_text(encoding="utf-8"), language="yaml" if p.suffix in (".yml", ".yaml") else "python" if p.suffix == ".py" else "bash")

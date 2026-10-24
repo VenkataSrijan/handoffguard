@@ -60,6 +60,11 @@ def cmd_bench(args) -> int:
 
 
 def main(argv=None) -> int:
+    for stream in (sys.stdout, sys.stderr):  # Windows consoles default to cp1252
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
     ap = argparse.ArgumentParser(prog="handoffguard")
     sub = ap.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("run", help="offboard the leaver in one scenario")

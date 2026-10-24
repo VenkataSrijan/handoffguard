@@ -186,7 +186,7 @@ def load_dotenv(path) -> None:
     p = Path(path)
     if not p.exists():
         return
-    for raw in p.read_text().splitlines():
+    for raw in p.read_text(encoding="utf-8").splitlines():
         line = raw.strip()
         if line and not line.startswith("#") and "=" in line:
             k, v = line.split("=", 1)

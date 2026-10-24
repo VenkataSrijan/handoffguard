@@ -27,7 +27,7 @@ class Tools:
         p = Path(path)
         if not p.exists():
             return ToolResult(False, error=f"HR request not found: {path}", error_code="not_found")
-        return ToolResult(True, json.loads(p.read_text()))
+        return ToolResult(True, json.loads(p.read_text(encoding="utf-8")))
 
     def scan_artifacts(self) -> ToolResult:
         files = []
@@ -35,7 +35,7 @@ class Tools:
             if not p.is_file() or (p.suffix not in TEXT_SUFFIXES and p.name not in (".env", "crontab")):
                 continue
             rel = p.relative_to(self.world.repo_dir).as_posix()
-            numbered = "\n".join(f"{i:>3}: {line}" for i, line in enumerate(p.read_text().splitlines(), 1))
+            numbered = "\n".join(f"{i:>3}: {line}" for i, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1))
             files.append({"file": rel, "text": numbered})
         targets = [
             {
