@@ -2,12 +2,13 @@
 
 The LLM can propose anything; only this code decides whether it runs.
 
-R1 Order          revoke a leaver credential only when every dependency on it is verified
-                  and every observed use of it is explained
+R1 Order          revoke a leaver credential only when every dependency on it is verified,
+                  every observed use of it is explained, and a reversible brownout
+                  (suspend + canary every automation) came back clean
 R2 Approval       write-scoped mints, role changes and member removal need a recorded approval
 R3 Retries        at most `max_retries` recoveries per dependency
 R4 Least privilege minted scopes must be justified (default read-only + scopes named in errors)
-R5 Known tools    only the 12 declared tools
+R5 Known tools    only the 14 declared tools
 R6 Denial         an action a human denied is never retried another way
 R7 Membership     never remove the leaver while one of their credentials is still held
                   (removal would break the automations still using it)
@@ -63,6 +64,8 @@ class Guard:
                     return self._no(f"R1: {cred} still backs unverified dependencies {pending}")
                 if a.unexplained.get(cred):
                     return self._no(f"R1: {cred} has unexplained recent use by {a.unexplained[cred]}")
+                if cred not in a.brownout_ok:
+                    return self._no(f"R1: {cred} has not passed a reversible brownout yet")
         if tool == "remove_member" and args.get("user") == a.employee:
             held = [c for c in a.leaver_credential_ids if c not in a.revoked]
             if held:

@@ -8,6 +8,7 @@ history so the agent has real usage evidence to reason over.
 from __future__ import annotations
 
 import datetime as dt
+import re
 import shutil
 from pathlib import Path
 
@@ -29,6 +30,7 @@ FILES = {
     ".env": ".env",
     "crontab": "crontab",
     "backup.py": "scripts/backup.py",
+    "release.yml": ".github/workflows/release.yml",
 }
 
 SCENARIOS: dict[str, dict] = {
@@ -81,13 +83,44 @@ SCENARIOS: dict[str, dict] = {
         "faults": {},
         "approvals": "deny_write",
     },
+    "s7_monthly_job": {
+        "title": "S7 · Monthly job no file or log reveals",
+        "description": "A monthly release workflow uses Riya's token under an unrelated secret name (RELEASE_TOKEN) and hasn't run in the last 14 days, so neither files nor audit log reveal it. Only the reversible brownout catches it.",
+        "files": ["deploy.yml", "release.yml"],
+        "faults": {},
+        "approvals": "approve_all",
+        "quiet_targets": ["pipeline:release"],
+    },
 }
-BENCHMARK_KEYS = ["s1_single", "s2_shared", "s3_hidden_alias", "s4_scope_403", "s5_last_owner", "s6_denied"]
+BENCHMARK_KEYS = ["s1_single", "s2_shared", "s3_hidden_alias", "s4_scope_403", "s5_last_owner", "s6_denied", "s7_monthly_job"]
+_SECRET_REF = re.compile(r"\$\{\{\s*secrets\.([A-Za-z0-9_]+)\s*\}\}")
+_VAR_REF = re.compile(r"\$\{([A-Za-z0-9_]+)\}")
 
 
-def _seed_audit(world: World, days: int = 6) -> None:
+def _workflow_secret_names(path: Path) -> list[str]:
+    return sorted(set(_SECRET_REF.findall(path.read_text(encoding="utf-8"))))
+
+
+def _host_secret_names(dotenv: Path) -> list[str]:
+    """Variables .env reads from the host environment (referenced but not defined in the file)."""
+    if not dotenv.exists():
+        return []
+    defined, referenced = set(), []
+    for raw in dotenv.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        referenced += [n for n in _VAR_REF.findall(value) if n not in defined]
+        defined.add(key.strip())
+    return sorted(set(referenced))
+
+
+def _seed_audit(world: World, days: int = 6, quiet: tuple = ()) -> None:
     today = dt.datetime.now().replace(minute=0, second=0, microsecond=0)
     for spec in world.targets.values():
+        if spec.name in quiet:
+            continue
         cred = world.token_id_for_value(next(iter(spec.secrets.values())))
         for d in range(days, 0, -1):
             hour = 2 if spec.kind == "cron_job" else 11
@@ -110,7 +143,8 @@ def build_world(key: str, overrides: dict | None = None, runs_dir: Path | None =
     repo_dir = root / "repo"
     (repo_dir / "scripts").mkdir(parents=True)
     shutil.copy(FIXTURES / "repo" / "scripts" / "deploy.py", repo_dir / "scripts" / "deploy.py")
-    shutil.copy(FIXTURES / "repo" / "README.md", repo_dir / "README.md")
+    readme = "README_injected.md" if faults.get("injection") else "README.md"
+    shutil.copy(FIXTURES / "repo" / readme, repo_dir / "README.md")
     for name in spec["files"]:
         dest = repo_dir / FILES[name]
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -128,7 +162,11 @@ def build_world(key: str, overrides: dict | None = None, runs_dir: Path | None =
     for path in sorted((repo_dir / ".github" / "workflows").glob("*.yml")):
         rel = path.relative_to(repo_dir).as_posix()
         world.targets[f"pipeline:{path.stem}"] = TargetSpec(
-            name=f"pipeline:{path.stem}", kind="pipeline", file=rel, client_id=f"ci:{rel}", secrets={"RIYA_PAT": pat.value}
+            name=f"pipeline:{path.stem}",
+            kind="pipeline",
+            file=rel,
+            client_id=f"ci:{rel}",
+            secrets={name: pat.value for name in _workflow_secret_names(path)},
         )
     for job in parse_crontab(repo_dir / "crontab"):
         stem = Path(job["script"]).stem
@@ -137,10 +175,10 @@ def build_world(key: str, overrides: dict | None = None, runs_dir: Path | None =
             kind="cron_job",
             file="crontab",
             client_id=CRON_CLIENT,
-            secrets={"RIYA_PAT": pat.value},
+            secrets={name: pat.value for name in _host_secret_names(repo_dir / ".env")},
             command=job["command"],
             host=CRON_HOST,
         )
-    _seed_audit(world)
+    _seed_audit(world, quiet=tuple(spec.get("quiet_targets", [])))
     set_active_world(world)
     return world

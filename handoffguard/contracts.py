@@ -21,6 +21,8 @@ TOOL_NAMES = (
     "assign_role",
     "remove_member",
     "revoke_credential",
+    "suspend_credential",
+    "reactivate_credential",
     "suspend_login",
     "probe_access",
 )

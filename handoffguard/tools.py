@@ -1,4 +1,4 @@
-"""The 12 tools the agent can call. Each wraps the simulated org and returns a ToolResult.
+"""The 14 tools the agent can call. Each wraps the simulated org and returns a ToolResult.
 
 Interfaces mirror real admin APIs (GitHub org/members/tokens/secrets, CI runs,
 an identity provider's login suspension) so real connectors can replace the
@@ -43,6 +43,7 @@ class Tools:
                 "kind": t.kind,
                 "defined_in": t.file,
                 "runs_on": t.host,
+                "repo": self.world.repo,
                 "secret_names": sorted(t.secrets),  # names are listable, values are not
                 "command": t.command or None,
             }
@@ -138,6 +139,25 @@ class Tools:
             return ToolResult(False, error=f"{credential_id} already revoked", error_code="already_revoked")
         tok.status = "revoked"
         return ToolResult(True, {"credential_id": credential_id, "status": "revoked"})
+
+    def suspend_credential(self, credential_id: str) -> ToolResult:
+        """Reversible: the credential stops authenticating but can be reactivated (disable-before-delete)."""
+        tok = self.world.tokens.get(credential_id)
+        if tok is None:
+            return ToolResult(False, error=f"unknown credential {credential_id}", error_code="not_found")
+        if tok.status != "active":
+            return ToolResult(False, error=f"{credential_id} is {tok.status}", error_code="not_active")
+        tok.status = "suspended"
+        return ToolResult(True, {"credential_id": credential_id, "status": "suspended"})
+
+    def reactivate_credential(self, credential_id: str) -> ToolResult:
+        tok = self.world.tokens.get(credential_id)
+        if tok is None:
+            return ToolResult(False, error=f"unknown credential {credential_id}", error_code="not_found")
+        if tok.status != "suspended":
+            return ToolResult(False, error=f"{credential_id} is {tok.status}, not suspended", error_code="not_suspended")
+        tok.status = "active"
+        return ToolResult(True, {"credential_id": credential_id, "status": "active"})
 
     def assign_role(self, org: str, user: str, role: str) -> ToolResult:
         w = self.world

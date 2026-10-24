@@ -21,7 +21,7 @@ class Token:
     owner: str
     owner_type: str  # user | service
     scopes: set[str]
-    status: str = "active"  # active | revoked
+    status: str = "active"  # active | suspended | revoked
     created: str = ""
     note: str = ""
 
@@ -86,6 +86,8 @@ class World:
             tok = self.token_by_value(value) if value else None
             if tok is None:
                 code, msg = 401, "remote: Invalid username or token. 401: bad credentials"
+            elif tok.status == "suspended":
+                code, msg = 401, "remote: Invalid username or token. 401: credential suspended"
             elif tok.status != "active":
                 code, msg = 401, "remote: Invalid username or token. 401: credential revoked or expired"
             elif tok.owner_type == "user" and tok.owner not in self.members:

@@ -27,11 +27,12 @@ def run_baseline(tools: Tools) -> dict:
         if t["status"] == "active":
             tools.revoke_credential(t["id"])
             steps.append(f"Revoked {t['id']}")
+    privileged_calls = 1  # remove_member, with no approval step in a checklist
     r = tools.remove_member(inv["org"], user)
     steps.append(f"Removed {user} from {inv['org']}" if r.ok else f"Tried to remove {user}: {r.error}")
     tools.suspend_login(user)
     steps.append(f"Suspended login for {user}")
-    return {"steps": steps, "unapproved_privileged_actions": 1, "user": user}
+    return {"steps": steps, "unapproved_privileged_actions": privileged_calls, "user": user}
 
 
 def evaluate(tools: Tools, user: str) -> dict:

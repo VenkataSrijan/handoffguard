@@ -8,6 +8,7 @@ Use `drive()` to run it to completion with an automatic approver.
 from __future__ import annotations
 
 import json
+import re
 import time
 from pathlib import Path
 from typing import Callable, Generator, Optional
@@ -67,7 +68,9 @@ class HandoffGuard:
         self.started = time.time()
         self.finished: Optional[float] = None
         self.discovery_summary = ""
-        self.unprivileged_violations = 0
+        self.targets: dict[str, dict] = {}
+        self.brownout_ok: set[str] = set()
+        self.brownouts: list[dict] = []
 
     # ------------------------------------------------------------ helpers
     def _log(self, phase: str, rationale: str, *, decided_by: str = "agent", tool=None, dep: Optional[Dependency] = None,
@@ -158,6 +161,7 @@ class HandoffGuard:
         # 3. Discover dependencies
         scan = yield from self._call("scan_artifacts", {})
         targets = {t["target"]: t for t in scan.data["targets"]}
+        self.targets = targets
         ctx = {"employee": self.employee, "credentials": creds, "uses": uses, "targets": list(targets.values()), "files": scan.data["files"]}
         yield from self._discover(ctx, targets)
 
@@ -183,6 +187,9 @@ class HandoffGuard:
                 self.held[cred] = why
                 self.open_items.append(f"{cred} kept active ({why}); needs a human decision")
                 yield self._log("escalate", f"Holding {cred}: {why}", level="wait")
+                continue
+            safe = yield from self._brownout(cred)
+            if not safe:
                 continue
             r = yield from self._call("revoke_credential", {"credential_id": cred})
             if not r.ok:
@@ -239,6 +246,7 @@ class HandoffGuard:
         self.discovery_summary = "; ".join(f"{s}: {len(o['dependencies'])}" for s, o in sources)
 
         valid_creds = set(self.leaver_credential_ids)
+        lines = _file_lines(ctx["files"])
         for source, out in sources:
             for item in out.get("dependencies", []):
                 t = item.get("target")
@@ -249,6 +257,14 @@ class HandoffGuard:
                     problem = f"{t} has no secret {item.get('secret_name')!r}"
                 elif item.get("credential_id") not in valid_creds:
                     problem = f"{item.get('credential_id')!r} is not a leaver credential"
+                if not problem:
+                    grounded = [e for e in item.get("evidence", []) if _grounded(str(e), lines)]
+                    dropped = len(item.get("evidence", [])) - len(grounded)
+                    if dropped:
+                        yield self._log("block", f"Grounding check: dropped {dropped} citation(s) from {source} for {t} that don't match the files.", decided_by="guard", input=item, level="block")
+                    if not grounded:
+                        problem = f"no citation for {t} matches the repository files"
+                    item = {**item, "evidence": grounded}
                 if problem:
                     yield self._log("block", f"Guard rejected a discovery item from {source}: {problem}", decided_by="guard", input=item, level="block")
                     continue
@@ -284,6 +300,61 @@ class HandoffGuard:
                 dep=dep,
             )
 
+    # ------------------------------------------------------------ brownout
+    def _brownout(self, cred: str) -> Generator[Event, object, bool]:
+        """Disable-before-delete: suspend the credential reversibly, canary EVERY automation,
+        and reactivate at once if anything breaks. Catches dependencies no file or log revealed."""
+        for round_no in (1, 2):
+            yield self._log("plan", f"Brownout {round_no}: suspend {cred} (reversible) and canary all {len(self.targets)} automations before revoking permanently.")
+            s = yield from self._call("suspend_credential", {"credential_id": cred})
+            if not s.ok:
+                self.held[cred] = s.error or "could not suspend"
+                return False
+            broken = []
+            for name in self.targets:
+                dep = next((d for d in self.deps if d.target == name), None)
+                c = yield from self._call("run_canary", {"target": name}, None)
+                if not c.ok and c.error_code == "timeout":  # transient: one retry before judging
+                    c = yield from self._call("run_canary", {"target": name}, None)
+                if not c.ok:
+                    broken.append((name, c, dep))
+            if not broken:
+                self.brownout_ok.add(cred)
+                self.brownouts.append({"credential": cred, "round": round_no, "result": "all automations passed"})
+                yield self._log("verify", f"Brownout clean: every automation runs with {cred} suspended. Safe to revoke permanently.", level="good")
+                return True
+            yield from self._call("reactivate_credential", {"credential_id": cred})
+            names = [b[0] for b in broken]
+            self.brownouts.append({"credential": cred, "round": round_no, "result": f"broke {names}; reactivated"})
+            yield self._log("escalate", f"Brownout caught {names} failing without {cred}. Reactivated {cred} immediately; nothing stays broken.", level="bad")
+            if round_no == 2:
+                break
+            for name, c, dep in broken:
+                used = set(c.data.get("credentials_used", []))
+                spec = self.targets[name]
+                if dep is not None or cred not in used or len(spec["secret_names"]) != 1:
+                    self.open_items.append(f"{name} fails when {cred} is suspended; needs investigation")
+                    self.held[cred] = f"{name} still depends on it"
+                    return False
+                new = Dependency(
+                    dep_id=f"dep-{len(self.deps) + 1}",
+                    kind=spec["kind"],
+                    target=name,
+                    secret_name=spec["secret_names"][0],
+                    credential_ref=cred,
+                    evidence=[f"brownout: {name} failed while {cred} was suspended ({(c.error or '').splitlines()[-1] if c.error else c.error_code})"],
+                    found_by="brownout",
+                )
+                self.deps.append(new)
+                yield self._log("plan", f"New dependency from brownout: {name} uses {cred} via {new.secret_name}. Re-homing it.", dep=new)
+                yield from self._rehome(new)
+                if new.status != "verified":
+                    self.held[cred] = f"{name} could not be re-homed"
+                    return False
+        self.held[cred] = "brownout still failing after re-homing"
+        self.open_items.append(f"{cred}: brownout still failing; kept active")
+        return False
+
     # ------------------------------------------------------------ re-home
     def _rehome(self, dep: Dependency) -> Generator[Event, object, None]:
         scopes = list(DEFAULT_SCOPES)
@@ -292,7 +363,7 @@ class HandoffGuard:
         yield self._log("plan", f"Re-home {dep.target}: mint a least-privilege service credential ({', '.join(scopes)}), rebind {dep.secret_name}, run canary.", dep=dep)
         while True:
             if remint:
-                args = {"owner": owner, "scopes": scopes, "repo": "club/website", "dep_id": dep.dep_id}
+                args = {"owner": owner, "scopes": scopes, "repo": self.targets[dep.target]["repo"], "dep_id": dep.dep_id}
                 if set(scopes) & WRITE_SCOPES:
                     ok = yield from self._approve(
                         "mint_credential",
@@ -463,6 +534,10 @@ class HandoffGuard:
             return f"Canary {args['target']} passed using {d.get('credentials_used')}"
         if tool == "revoke_credential":
             return f"Revoked {d['credential_id']}"
+        if tool == "suspend_credential":
+            return f"Suspended {d['credential_id']} (reversible)"
+        if tool == "reactivate_credential":
+            return f"Reactivated {d['credential_id']}"
         if tool == "assign_role":
             return f"{d['user']} is now {d['role_now']} of {d['org']}"
         if tool == "remove_member":
@@ -493,6 +568,8 @@ class HandoffGuard:
             "recoveries": len(self.recoveries),
             "guard_blocks": self.guard.blocks,
             "approvals": len(self.approvals_log),
+            "brownouts": len(self.brownouts),
+            "llm_calls": getattr(self.planner, "calls", 0),
             "unapproved_privileged_actions": unapproved,
             "residual_access_paths": len(self.probe_paths),
             "open_items": len(self.open_items),
@@ -510,6 +587,40 @@ class HandoffGuard:
             (self.run_dir / "report.md").write_text(summary["report"], encoding="utf-8")
             summary["run_dir"] = str(self.run_dir)
         return summary
+
+
+_CITE = re.compile(r"^\s*([^\s:][^:]*):(\d+):\s?(.*)$")
+
+
+def _file_lines(files: list[dict]) -> dict[str, list[str]]:
+    """Rebuild original lines from the numbered text scan_artifacts returns."""
+    out = {}
+    for f in files:
+        rows = []
+        for row in f["text"].splitlines():
+            _, _, text = row.partition(": ")
+            rows.append(text)
+        out[f["file"]] = rows
+    return out
+
+
+def _norm(s: str) -> str:
+    return " ".join(s.split())
+
+
+def _grounded(cite: str, lines: dict[str, list[str]]) -> bool:
+    """True if a 'file:line: text' citation quotes that line of that file (whitespace-insensitive)."""
+    m = _CITE.match(cite)
+    if not m:
+        return False
+    path, num, quote = m.group(1).strip(), int(m.group(2)), _norm(m.group(3))
+    rows = lines.get(path)
+    if rows is None or not 1 <= num <= len(rows):
+        return False
+    actual = _norm(rows[num - 1])
+    if not quote:
+        return bool(actual)
+    return bool(actual) and (quote in actual or actual in quote)
 
 
 def drive(agent: HandoffGuard, approver: Callable[[ApprovalRequest], str], on_event: Optional[Callable[[LedgerEntry], None]] = None) -> dict:

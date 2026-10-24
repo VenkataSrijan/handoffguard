@@ -14,6 +14,8 @@ Venkata Srijan (agent, planner, guard, UI) · Tushar Reddy (simulated org, servi
 
 Offboarding today is a checklist: revoke tokens, remove the person from the org, disable the account. But a person's identity is often still doing work. Deploy pipelines authenticate with their personal token, cron jobs read it through `.env` aliases, and they may be the org's last owner. Revoke first and production breaks; delay and a former member keeps live access.
 
+This is the #1 risk in the [OWASP Non-Human Identities Top 10 (NHI1:2025 Improper Offboarding)](https://owasp.github.io/www-project-non-human-identities-top-10/2025/1-improper-offboarding/), which lists "an ex-employee with unrevoked credentials" among its attack scenarios and recommends transferring ownership, rotating credentials, and automating offboarding by integrating HR systems with IAM tools.
+
 Public examples: Jenkins builds stopped after the token owner left ([Liferay KB](https://learn.liferay.com/kb-article/how-to-resolve-jenkins-builds-no-longer-completing-after-github-user-contact-adjustments)); a CI token died with its creator and the error hid the cause ([SonarCloud community](https://community.sonarsource.com/t/sonarcloud-tokens-are-tied-to-the-user-that-added-the-project/74290)).
 
 ## What HandoffGuard does (CGI flow)
@@ -22,21 +24,23 @@ Public examples: Jenkins builds stopped after the token owner left ([Liferay KB]
 | --- | --- |
 | **Data ingestion** | Reads the HR offboarding request (`OFF-2026-014.json`), the leaver's credentials and roles, 14 days of token-use audit log, and the repository's CI workflows, `.env`, crontab and scripts. |
 | **Intelligent decision-making** | The LLM finds every dependency, including ones hidden behind alias chains (`RIYA_PAT → DEPLOY_TOKEN → GH_TOKEN → backup.py → cron`), and must explain every client seen in the audit log. When something fails it diagnoses the error text and picks the next action. |
-| **Action execution** | Mints a least-privilege service credential, rebinds the secret, runs a real canary, re-mints with justified scopes after a 403, promotes a successor when the leaver is the last owner, revokes, removes, suspends login. |
+| **Action execution** | Mints a least-privilege service credential, rebinds the secret, runs a real canary, re-mints with justified scopes after a 403, runs a reversible brownout of every automation, then revokes, promotes a successor when the leaver is the last owner, removes, suspends login. |
 | **Outcome reporting** | Writes a completion report (dependencies, evidence, canary results before and after revocation, approvals, recoveries, residual-access probe, open items) plus a JSONL audit ledger. |
 
 ## Responsible AI controls
 
 The LLM proposes; a deterministic **policy guard** decides (`handoffguard/guard.py`).
 
-- **R1 Order:** a leaver credential is revoked only after every dependency on it passes a canary *and* every observed use of it is explained.
+- **R1 Order:** a leaver credential is revoked only after every dependency on it passes a canary, every observed use of it is explained, *and* a reversible **brownout** comes back clean: the credential is suspended, every automation is canaried, and it is reactivated at once if anything fails. This is the disable-before-delete practice [Google Cloud recommends](https://docs.cloud.google.com/iam/docs/service-accounts-disable-enable) to confirm "no critical applications are using" an account; it catches dependencies no file or log reveals (S7).
 - **R2 Approval:** write-scoped credentials, role changes and member removal need a human approval.
 - **R3 Retries:** max 2 recoveries per dependency, then escalate.
 - **R4 Least privilege:** new credentials start read-only; extra scopes only if an error names them. Over-broad LLM requests are blocked.
-- **R5 Known tools:** 12 tools only, and none of them deletes anything (accounts are suspended).
+- **R5 Known tools:** 14 tools only, and none of them deletes anything (accounts are suspended).
 - **R6 Denial:** a denied action is never retried another way. The agent rolls the automation back and escalates.
 - **R7 Membership:** the leaver is never removed while one of their credentials still backs a running automation.
 - Discovery output is validated: invented targets, secrets or credentials are rejected.
+- **Grounding check:** every file:line the LLM cites must match the repository; ungrounded citations are dropped, and a dependency with none left is rejected.
+- **Prompt-injection resistant:** repository files are treated as untrusted data. Turn on *Malicious instructions hidden in the repo README* to watch an attack that tells agents to skip checks, drop a dependency and revoke another user's token fail: the guard rejects the foreign credential, and the unexplained audit-log use keeps the token held until a human looks.
 - A canary only counts if the audit log shows it used the *new* credential.
 - Token values never appear in logs or reports.
 
@@ -47,6 +51,7 @@ HR request ─► inventory + audit log ─► scan repo ─► LLM discovery (+
    for each dependency: mint (read-only) ─► rebind ─► canary ─► pass? verified
                                             fail ─► LLM diagnosis ─► guard ─► approval? ─► retry
    revoke (guard R1) ─► post-revoke canary ─► remove member (approval; last-owner recovery)
+   brownout: suspend (reversible) ─► canary ALL automations ─► fail? reactivate, re-home, retry
    suspend login ─► residual-access probe ─► completion report
 ```
 
@@ -77,8 +82,8 @@ streamlit run app.py                                 # the console
 python -m handoffguard run --scenario demo           # CLI, auto approvals
 python -m handoffguard run --scenario demo --approvals ask
 python -m handoffguard run --scenario demo --baseline   # what the naive checklist breaks
-python -m handoffguard bench                         # 6 scenarios, baseline vs agent
-python -m pytest -q                                  # 20 tests, offline
+python -m handoffguard bench                         # 7 scenarios, baseline vs agent
+python -m pytest -q                                  # 26 tests, offline
 ```
 
 ### Demo script (90 seconds)
@@ -86,8 +91,9 @@ python -m pytest -q                                  # 20 tests, offline
 1. Scenario **Demo**, click **Run naive checklist**: three automations turn **Broken**.
 2. Click **Run HandoffGuard**: the LLM finds three dependencies including the hidden cron job, re-homes them, hits a real 403, diagnoses it, asks for approval, re-mints, verifies, revokes, removes, probes clean.
 3. Flip **Leaver is the org's last owner** in the judge's switchboard and run again: removal is blocked, the agent promotes the successor (approval), verifies, and finishes.
-4. **Benchmark** tab: baseline vs HandoffGuard across six scenarios.
-5. **Report** tab: the completion report an IT manager signs off.
+4. Pick **S7** to show the brownout catching a job that no file or log reveals, or turn on the README-injection toggle to show the agent can't be talked out of its checks.
+5. **Benchmark** tab: baseline vs HandoffGuard across seven scenarios.
+6. **Report** tab: the completion report an IT manager signs off.
 
 ## Scenarios and results
 
@@ -99,8 +105,9 @@ python -m pytest -q                                  # 20 tests, offline
 | S4 | Replacement token lacks write scope (403) | 1 broken | COMPLETE after diagnosis + approval |
 | S5 | Leaver is the org's last owner | 1 broken, membership left | COMPLETE after promoting successor |
 | S6 | Approver denies write access | 1 broken | Safe stop: rolled back, 0 broken, escalated |
+| S7 | Monthly job under an unrelated secret name, not run in 14 days | 2 broken | Brownout catches it, reactivates instantly, re-homes it, then revokes: COMPLETE, 0 broken |
 
-Measured by `python -m handoffguard bench` / the Benchmark tab with the same yardstick for both: run every automation's canary after offboarding, then probe for residual access.
+Measured by `python -m handoffguard bench` / the Benchmark tab with the same yardstick for both: run every automation's canary after offboarding, then probe for residual access. Rules-only totals: naive checklist 10 broken automations and 7 unapproved privileged actions; HandoffGuard 0 and 0.
 
 ## Repository layout
 
@@ -111,7 +118,7 @@ handoffguard/
   agent.py                  the agent loop (generator: streams events, pauses for approvals)
   guard.py                  policy guard R1–R7
   planners.py               LLM planner (Groq/Gemini, OpenAI-compatible) + rules fallback
-  tools.py                  12 tools over the simulated org
+  tools.py                  14 tools over the simulated org
   report.py                 completion report
   runner.py                 baseline, evaluation, benchmark
   world/                    simulated org: state, git service, CI runner, scenarios
@@ -123,4 +130,5 @@ tests/test_scenarios.py     scenario suite + guard + LLM-path tests
 
 - The organisation is simulated for safety and repeatability; connectors for real GitHub and Google Workspace are the next step.
 - Free-tier LLM limits apply; on any LLM error the agent falls back to rules and says so in the timeline.
-- Discovery covers CI workflows, `.env` files, crontabs and scripts in one repository.
+- Discovery covers CI workflows, `.env` files, crontabs and scripts in one repository. The brownout covers every automation the agent knows exists; one that lives outside the scanned repository would still need a connector.
+- A brownout briefly suspends a live credential. In production it would run in a maintenance window; here the canaries are the only consumers.

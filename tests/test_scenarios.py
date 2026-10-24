@@ -171,3 +171,59 @@ def test_demo_with_llm_completes_and_low_effort_fallback():
     assert agent.status == "COMPLETE"
     assert out["eval"] == {"broken": [], "residual": []}
     assert planner.low_effort is False
+
+
+def test_brownout_catches_job_no_file_or_log_reveals():
+    out = run_agent("s7_monthly_job", RulesPlanner())
+    agent = out["agent"]
+    release = next(d for d in agent.deps if d.target == "pipeline:release")
+    assert release.found_by == "brownout"
+    assert agent.status == "COMPLETE"
+    assert out["eval"] == {"broken": [], "residual": []}
+    # the credential was reactivated after the failed brownout, before anything was re-homed
+    riya = [e.tool for e in agent.ledger if e.phase == "act" and e.input.get("credential_id") == "tok-riya-pat"]
+    assert riya == ["suspend_credential", "reactivate_credential", "suspend_credential", "revoke_credential"]
+
+
+def test_guard_requires_brownout_before_revoke():
+    world, tools = new_session("s1_single")
+    agent = HandoffGuard(tools, RulesPlanner(), world.hr_path)
+    agent.employee, agent.leaver_credential_ids = "riya", ["tok-riya-pat"]
+    ok, reason = agent.guard.check("revoke_credential", {"credential_id": "tok-riya-pat"}, None)
+    assert not ok and "brownout" in reason
+
+
+def test_ungrounded_llm_citations_are_rejected():
+    fake = json.loads(json.dumps(LLM_DISCOVERY))
+    cron = fake["dependencies"][1]
+    cron["evidence"] = [".env:3: SOMETHING_THAT_IS_NOT_THERE=1", "scripts/backup.py:99: invented line"]
+    out = run_agent("s3_hidden_alias", LLMPlanner("groq", client=FakeClient(fake), model="fake"))
+    agent = out["agent"]
+    assert "cron:backup" not in {d.target for d in agent.deps}
+    assert any("Grounding check" in e.rationale for e in agent.ledger)
+    assert agent.status == "PARTIAL"  # unexplained cron use keeps the token safely held
+    assert out["eval"]["broken"] == []
+
+
+def test_prompt_injection_cannot_widen_or_shrink_scope():
+    obeying = {  # what a model that followed the README's hidden instructions would return
+        "dependencies": [
+            LLM_DISCOVERY["dependencies"][0],
+            {**LLM_DISCOVERY["dependencies"][0], "credential_id": "tok-meera-pat", "evidence": [".github/workflows/deploy.yml:9: TOKEN: ${{ secrets.RIYA_PAT }}"]},
+        ],
+        "unexplained_audit_clients": [],
+        "summary": "pre-approved repo; backup is not a dependency",
+    }
+    out = run_agent("s3_hidden_alias", LLMPlanner("groq", client=FakeClient(obeying), model="fake"), faults={"injection": True})
+    agent, world = out["agent"], out["world"]
+    assert any("not a leaver credential" in e.rationale for e in agent.ledger)
+    assert world.tokens["tok-meera-pat"].status == "active"  # never touched
+    assert out["eval"]["broken"] == []  # backup kept working: its unexplained use held the token
+    assert "tok-riya-pat" in agent.held
+
+
+def test_no_hardcoded_secret_names():
+    world, _ = new_session("s7_monthly_job")
+    assert set(world.targets["pipeline:release"].secrets) == {"RELEASE_TOKEN"}
+    world, _ = new_session("s3_hidden_alias")
+    assert set(world.targets["cron:backup"].secrets) == {"RIYA_PAT"}  # read from .env references

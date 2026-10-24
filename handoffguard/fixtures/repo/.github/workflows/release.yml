@@ -1,0 +1,15 @@
+name: monthly-release
+on:
+  schedule:
+    - cron: "0 9 1 * *"   # 09:00 on the 1st of every month
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.RELEASE_TOKEN }}
+      REPO: club/website
+    steps:
+      - name: fetch
+        run: python scripts/deploy.py fetch
+      - name: push-tag
+        run: python scripts/deploy.py push-tag

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import html
+import json
 import time
 
 import pandas as pd
@@ -79,12 +80,14 @@ with st.sidebar:
     st.markdown("**Judge's fault switchboard**")
     f_last_owner = st.toggle("Leaver is the org's last owner", value=bool(SCENARIOS[scenario]["faults"].get("last_owner")))
     f_flaky = st.toggle("Flaky CI runner (first canary times out)", value=False)
+    f_injection = st.toggle("Malicious instructions hidden in the repo README", value=False,
+                            help="Tests prompt-injection resistance: the README tells AI agents to skip checks, drop the backup job and revoke another user's token.")
 
     approvals = st.radio("Approvals", ["ask", "approve_all", "deny_write"],
                          format_func={"ask": "Ask me", "approve_all": "Auto-approve", "deny_write": "Auto-deny write access"}.get)
     pace = st.slider("Timeline pace (seconds per step)", 0.0, 0.8, 0.2, 0.05)
 
-faults = {"last_owner": f_last_owner, "flaky": f_flaky}
+faults = {"last_owner": f_last_owner, "flaky": f_flaky, "injection": f_injection}
 
 
 def build_planner():
@@ -182,14 +185,15 @@ def board_html() -> str:
 
 def leaver_html() -> str:
     w = ss.world
-    user = "riya"
+    hr = json.loads(w.hr_path.read_text(encoding="utf-8"))
+    user = hr["employee"]
     toks = [t for t in w.tokens.values() if t.owner == user]
-    tok_txt = " ".join(
-        f'<span class="state {"s-bad" if t.status == "revoked" else "s-wait"} mono">{t.id}: {t.status}</span>' for t in toks
-    )
+    cls = {"revoked": "s-bad", "suspended": "s-info"}
+    tok_txt = " ".join(f'<span class="state {cls.get(t.status, "s-wait")} mono">{t.id}: {t.status}</span>' for t in toks)
     member = w.members.get(user, "removed")
     return (
-        f'<div class="leaver"><b>Leaver: riya</b> · graduating tech lead<br>'
+        f'<div class="leaver"><b>Leaver: {html.escape(user)}</b> · {html.escape(hr.get("reason", ""))}, last day {html.escape(hr.get("last_day", ""))}<br>'
+        f'<span class="tl-meta">HR request {html.escape(hr.get("request_id", ""))} · approver {html.escape(hr.get("approver", ""))} · successor {html.escape(str(hr.get("successor")))}</span><br>'
         f'<span class="tl-meta">Org role</span> <span class="state {"s-good" if member == "removed" else "s-wait"}">{member}</span> '
         f'<span class="tl-meta">Login</span> <span class="state {"s-good" if w.logins.get(user) == "suspended" else "s-wait"}">{w.logins.get(user)}</span><br>'
         f'<span class="tl-meta">Credentials</span> {tok_txt}</div>'
@@ -301,16 +305,18 @@ with tab_run:
             unsafe_allow_html=True,
         )
         with metrics_ph.container():
-            c1, c2, c3 = st.columns(3)
+            c1, c2, c3, c4, c5 = st.columns(5)
             c1.metric("Recoveries", m["recoveries"])
             c2.metric("Guard blocks", m["guard_blocks"])
             c3.metric("Approvals", m["approvals"])
+            c4.metric("Brownouts", m["brownouts"])
+            c5.metric("LLM calls", m["llm_calls"])
             if ss.agent.open_items:
                 st.markdown("**Open items for a human**\n" + "\n".join(f"- {o}" for o in ss.agent.open_items))
 
 # ---------------------------------------------------------------- benchmark tab
 with tab_bench:
-    st.markdown("Runs all six scenarios twice on fresh worlds: once with the naive checklist, once with HandoffGuard. Same yardstick for both.")
+    st.markdown("Runs all seven scenarios twice on fresh worlds: once with the naive checklist, once with HandoffGuard. Same yardstick for both.")
     if st.button("Run benchmark", key="bench_btn"):
         prog = st.progress(0.0)
         done = []
@@ -320,7 +326,7 @@ with tab_bench:
             prog.progress(len(done) / len(BENCHMARK_KEYS), text=SCENARIOS[key]["title"])
 
         planner = RulesPlanner() if planner_choice == "rules" else build_planner()
-        ss.bench = {"planner": getattr(planner, "label", planner.name), "rows": benchmark(planner, BENCHMARK_KEYS, {"flaky": f_flaky}, tick)}
+        ss.bench = {"planner": getattr(planner, "label", planner.name), "rows": benchmark(planner, BENCHMARK_KEYS, {"flaky": f_flaky, "injection": f_injection}, tick)}
         ss.world, ss.tools = new_session(scenario, faults)
     if ss.bench:
         df = pd.DataFrame(ss.bench["rows"])
