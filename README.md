@@ -46,13 +46,18 @@ The LLM proposes; a deterministic **policy guard** decides (`handoffguard/guard.
 
 ## How it works
 
+![HandoffGuard architecture](docs/architecture.png)
+
 ```
-HR request ─► inventory + audit log ─► scan repo ─► LLM discovery (+ rules) ─► validate
-   for each dependency: mint (read-only) ─► rebind ─► canary ─► pass? verified
-                                            fail ─► LLM diagnosis ─► guard ─► approval? ─► retry
-   revoke (guard R1) ─► post-revoke canary ─► remove member (approval; last-owner recovery)
-   brownout: suspend (reversible) ─► canary ALL automations ─► fail? reactivate, re-home, retry
-   suspend login ─► residual-access probe ─► completion report
+1 Ingest    HR request ─► inventory ─► 14-day audit log
+2 Discover  scan repo ─► LLM discovery (+ rules) ─► validate + grounding check
+3 Re-home   for each dependency: mint read-only key ─► rebind ─► canary ─► pass? verified
+            fail ─► LLM diagnosis ─► guard ─► approval if needed ─► re-mint ─► canary again
+4 Brownout  suspend leaver key (reversible) ─► canary ALL automations
+            any failure ─► reactivate at once ─► re-home what broke ─► brownout again
+5 Revoke    revoke (guard R1) ─► post-revoke canary for every dependency
+6 Remove    remove member (approval; last-owner recovery) ─► suspend login, never delete
+7 Report    residual-access probe ─► completion report + audit ledger
 ```
 
 The simulated org is real code, not flags:
@@ -65,9 +70,13 @@ The simulated org is real code, not flags:
 Requires Python 3.10+.
 
 ```bash
-git clone <this repo> && cd handoffguard
+git clone https://github.com/VenkataSrijan/handoffguard.git && cd handoffguard
 python -m venv .venv
-# Windows: .venv\Scripts\activate    macOS/Linux: source .venv/bin/activate
+# macOS/Linux:
+source .venv/bin/activate
+# Windows PowerShell:
+#   Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+#   .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 cp .env.example .env        # Windows: copy .env.example .env
 # put a free key in .env: GROQ_API_KEY=... (console.groq.com) or GEMINI_API_KEY=... (aistudio.google.com)
@@ -107,12 +116,13 @@ python -m pytest -q                                  # 26 tests, offline
 | S6 | Approver denies write access | 1 broken | Safe stop: rolled back, 0 broken, escalated |
 | S7 | Monthly job under an unrelated secret name, not run in 14 days | 2 broken | Brownout catches it, reactivates instantly, re-homes it, then revokes: COMPLETE, 0 broken |
 
-Measured by `python -m handoffguard bench` / the Benchmark tab with the same yardstick for both: run every automation's canary after offboarding, then probe for residual access. Rules-only totals: naive checklist 10 broken automations and 7 unapproved privileged actions; HandoffGuard 0 and 0.
+Measured by `python -m handoffguard bench` / the Benchmark tab with the same yardstick for both: run every automation's canary after offboarding, then probe for residual access. Rules-only totals: naive checklist 10 broken automations and 7 unapproved privileged actions; HandoffGuard 0 and 0. In our live runs on 24 Oct 2026 with the LLM (Groq `openai/gpt-oss-120b`), the Demo, S3 (including with the README-injection fault on) and S7 all finished COMPLETE.
 
 ## Repository layout
 
 ```
-app.py                      Streamlit console
+app.py                      Streamlit console (phase rail, automation board, approvals, benchmark, report)
+docs/architecture.png       architecture diagram
 handoffguard/
   contracts.py              HR request, dependency, ledger entry, tool result, approval
   agent.py                  the agent loop (generator: streams events, pauses for approvals)
