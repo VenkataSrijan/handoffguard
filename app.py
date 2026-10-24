@@ -35,7 +35,8 @@ CSS = """
 }
 html, body, [class*="css"], .stMarkdown, .stButton button, .stRadio, .stSelectbox, .stToggle { font-family:'IBM Plex Sans', system-ui, sans-serif; }
 .stApp { background: var(--paper); }
-[data-testid="stToolbar"], #MainMenu, footer { display:none !important; }
+[data-testid="stAppDeployButton"], [data-testid="stMainMenu"], #MainMenu, footer { display:none !important; }
+[data-testid="stExpandSidebarButton"], [data-testid="stSidebarCollapsedControl"] { display:flex !important; visibility:visible !important; }
 [data-testid="stHeaderActionElements"], .stMarkdown h1 a, .stMarkdown h3 a { display:none !important; }
 header[data-testid="stHeader"] { background: transparent; }
 .block-container { padding-top: 1.4rem; padding-bottom: 3rem; max-width: 1360px; }
@@ -143,6 +144,24 @@ section[data-testid="stSidebar"] .block-container { padding-top: 1.2rem; }
 .tbl td { padding:10px 12px; border-bottom:1px solid #EEF1F5; color:var(--ink); }
 .tbl tr:last-child td { border-bottom:none; }
 .num { text-align:center; font-variant-numeric: tabular-nums; }
+
+/* responsive */
+.tok { white-space:nowrap; }
+.kv > div { min-width:0; overflow-wrap:anywhere; }
+.brd > div { min-width:0; }
+.stButton button p { white-space:nowrap; }
+@media (max-width: 1400px) {
+  [data-testid="stHorizontalBlock"]:has(.stack-me) { flex-direction:column; }
+  [data-testid="stHorizontalBlock"]:has(.stack-me) > [data-testid="stColumn"] { width:100% !important; flex:1 1 100% !important; min-width:100% !important; }
+  [data-testid="stHorizontalBlock"]:has(.sum-card) { flex-direction:column-reverse; }
+  .rail .step .cgi { display:none; }
+}
+@media (max-width: 1000px) {
+  .brd { grid-template-columns: 1.1fr 1.5fr 1fr; }
+  .brd > div:nth-child(3) { display:none; }
+  .stats { grid-template-columns:repeat(2, 1fr); }
+  .cmp { grid-template-columns:1fr; }
+}
 
 /* streamlit widgets */
 .stTabs [data-baseweb="tab-list"] { gap: 4px; border-bottom:1px solid var(--line); }
@@ -340,7 +359,7 @@ def board_html() -> str:
     w = ss.world
     deps = {d.target: d for d in ss.agent.deps} if ss.agent else {}
     broken = {b["target"]: b["error"] for b in (ss.eval or {}).get("broken", [])}
-    rows = ['<div class="card"><h3>Automations<span class="sub">what the leaver\'s credentials run, and what they run on now</span></h3>',
+    rows = ['<div class="card stack-me"><h3>Automations<span class="sub">what the leaver\'s credentials run, and what they run on now</span></h3>',
             '<div class="brd head"><div>Automation</div><div>Credential: was → now</div><div>Found by</div><div>State</div></div>']
     for name, spec in w.targets.items():
         now = w.token_id_for_value(next(iter(spec.secrets.values())))
@@ -428,7 +447,7 @@ def summary_html() -> str:
         b = ss.eval
         items = "".join(f"<li>{esc(s)}</li>" for s in ss.baseline["steps"])
         return (
-            '<div class="card"><h3>Naive checklist result</h3>'
+            '<div class="card stack-me sum-card"><h3>Naive checklist result</h3>'
             f'<div class="verdict" style="color:var(--bad)">{len(b["broken"])} automation(s) broken</div>'
             '<div class="stats">'
             f'<div class="stat"><div class="n">{len(b["broken"])}</div><div class="l">Broken automations</div></div>'
@@ -437,7 +456,7 @@ def summary_html() -> str:
             f'</div><ul class="items" style="list-style:none">{items}</ul></div>'
         ).replace('<li>', '<li style="background:#F6F8FB;color:#0F1B2D">')
     if not ss.agent:
-        return ('<div class="card"><h3>Run summary</h3><div class="empty">Run the naive checklist to see what breaks today, '
+        return ('<div class="card stack-me sum-card"><h3>Run summary</h3><div class="empty">Run the naive checklist to see what breaks today, '
                 "then run HandoffGuard on the same scenario.</div></div>")
     m = ss.agent.metrics()
     if ss.summary:
@@ -457,15 +476,15 @@ def summary_html() -> str:
     if ss.agent.open_items and ss.summary:
         items = '<ul class="items">' + "".join(f"<li>{esc(o)}</li>" for o in ss.agent.open_items) + "</ul>"
     extra = f'<div class="side-note" style="margin-top:10px">LLM calls: {m["llm_calls"]} · unapproved privileged actions: {m["unapproved_privileged_actions"]}</div>'
-    return f'<div class="card"><h3>Run summary</h3>{verdict}<div class="stats">{grid}</div>{extra}{items}</div>'
+    return f'<div class="card stack-me sum-card"><h3>Run summary</h3>{verdict}<div class="stats">{grid}</div>{extra}{items}</div>'
 
 
 # ----------------------------------------------------------------------------- layout
 header_ph = st.empty()
-b1, b2, b3, _ = st.columns([1.25, 1.25, 0.7, 4.3])
-b1.button("Run naive checklist", on_click=start_baseline, width="stretch", help="What offboarding looks like today: revoke, remove, done.")
-b2.button("Run HandoffGuard", on_click=start_agent, type="primary", width="stretch")
-b3.button("Reset", on_click=reset_world, width="stretch")
+with st.container(horizontal=True, gap="small"):
+    st.button("Run naive checklist", on_click=start_baseline, width="content", help="What offboarding looks like today: revoke, remove, done.")
+    st.button("Run HandoffGuard", on_click=start_agent, type="primary", width="content")
+    st.button("Reset", on_click=reset_world, width="content")
 
 tab_run, tab_bench, tab_report, tab_world = st.tabs(["Live run", "Benchmark", "Report", "World"])
 
@@ -549,9 +568,9 @@ with tab_run:
                 f'<div class="row"><b>Action:</b> <span class="mono">{esc(req.action)} {esc(json.dumps(args))}</span></div></div>',
                 unsafe_allow_html=True,
             )
-            a1, a2, _ = st.columns([1, 1, 5])
-            a1.button("Approve", type="primary", on_click=decide, args=("approved",), width="stretch")
-            a2.button("Deny", on_click=decide, args=("denied",), width="stretch")
+            with st.container(horizontal=True, gap="small"):
+                st.button("Approve", type="primary", on_click=decide, args=("approved",), width="content")
+                st.button("Deny", on_click=decide, args=("denied",), width="content")
 
 # ----------------------------------------------------------------------------- benchmark
 with tab_bench:
